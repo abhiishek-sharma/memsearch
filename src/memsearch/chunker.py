@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.+)$", re.MULTILINE)
 _HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
+_FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
 
 # Minimum meaningful text length after stripping metadata noise.
 # Chunks with less useful text than this are dropped during chunking.
@@ -28,6 +29,29 @@ def clean_content_for_embedding(text: str) -> str:
     return cleaned.strip()
 
 
+def _heading_matches(lines: list[str]) -> list[re.Match[str] | None]:
+    """Match ATX headings per line, ignoring lines inside fenced code blocks.
+
+    A ``# comment`` inside a fence is code, not a heading.  A fence closes on
+    a line with the same marker character, at least as long as the opener and
+    nothing after it; an unclosed fence runs to the end of the text.
+    """
+    result: list[re.Match[str] | None] = []
+    fence = ""  # opening marker while inside a fence
+    for line in lines:
+        fm = _FENCE_RE.match(line)
+        if fence:
+            if fm and fm.group(1)[0] == fence[0] and len(fm.group(1)) >= len(fence) and not fm.group(2).strip():
+                fence = ""
+            result.append(None)
+        elif fm and not (fm.group(1)[0] == "`" and "`" in fm.group(2)):
+            fence = fm.group(1)
+            result.append(None)
+        else:
+            result.append(_HEADING_RE.match(line))
+    return result
+
+
 def _has_meaningful_content(text: str) -> bool:
     """Return True if *text* has enough substance to be worth indexing.
 
@@ -39,7 +63,8 @@ def _has_meaningful_content(text: str) -> bool:
     # Remove HTML comments first
     stripped = _HTML_COMMENT_RE.sub("", text)
     # Remove heading lines — we only care about body text
-    lines = [ln for ln in stripped.splitlines() if not _HEADING_RE.match(ln)]
+    all_lines = stripped.splitlines()
+    lines = [ln for ln, m in zip(all_lines, _heading_matches(all_lines), strict=True) if not m]
     body = "\n".join(lines).strip()
     return len(body) >= _MIN_MEANINGFUL_LEN
 
@@ -93,8 +118,7 @@ def chunk_markdown(
     lines = text.split("\n")
     # Find all heading positions
     heading_positions: list[tuple[int, int, str]] = []  # (line_idx, level, title)
-    for i, line in enumerate(lines):
-        m = _HEADING_RE.match(line)
+    for i, m in enumerate(_heading_matches(lines)):
         if m:
             heading_positions.append((i, len(m.group(1)), m.group(2).strip()))
 

@@ -299,3 +299,42 @@ def test_split_section_preserves_anchor_with_body():
     assert any(anchor in chunk.content and paragraphs[0] in chunk.content for chunk in chunks)
     assert all(clean_content_for_embedding(chunk.content) for chunk in chunks)
     assert all(chunk.source == "daily.md" and chunk.heading == "10:00" for chunk in chunks)
+
+
+def test_hash_comment_inside_fenced_code_is_not_a_heading() -> None:
+    md = "## Setup\nInstall it:\n\n```bash\n# install deps\npip install foo\n```\n\nThen run it."
+    chunks = chunk_markdown(md, "a.md")
+
+    assert len(chunks) == 1
+    assert chunks[0].heading == "Setup"
+    assert chunks[0].heading_level == 2
+    assert chunks[0].content == md
+
+
+def test_heading_after_closed_fence_is_still_detected() -> None:
+    md = "## A\n~~~\n# not a heading\n~~~\n\n## B\ntext"
+    chunks = chunk_markdown(md, "a.md")
+
+    assert [c.heading for c in chunks] == ["A", "B"]
+
+
+def test_longer_fence_is_not_closed_by_shorter_one() -> None:
+    md = "## A\n````md\n```\n# inner\n```\n````\n\n## B\ntext"
+    chunks = chunk_markdown(md, "a.md")
+
+    assert [c.heading for c in chunks] == ["A", "B"]
+
+
+def test_unclosed_fence_runs_to_end_of_text() -> None:
+    md = "## A\n```\n# comment\n## also code"
+    chunks = chunk_markdown(md, "a.md")
+
+    assert [c.heading for c in chunks] == ["A"]
+
+
+def test_comment_only_fence_counts_as_body_content() -> None:
+    md = "## A\n```\n# note\n```"
+    chunks = chunk_markdown(md, "a.md")
+
+    assert len(chunks) == 1
+    assert chunks[0].heading == "A"
