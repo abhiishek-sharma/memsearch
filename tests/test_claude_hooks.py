@@ -963,6 +963,70 @@ exit 0
     assert _wait_for(lambda: state.exists() and json.loads(state.read_text())["status"] == final_status)
 
 
+@pytest.mark.skipif(os.name != "posix", reason="compares POSIX process groups")
+def test_claude_session_start_lite_index_runs_in_its_own_process_group(tmp_path: Path) -> None:
+    script = Path("plugins/claude-code/hooks/session-start.sh").resolve()
+    home = tmp_path / "home"
+    fake_bin = tmp_path / "bin"
+    memsearch_dir = tmp_path / ".memsearch"
+    pgid_file = tmp_path / "index-pgid"
+    for directory in (home / ".memsearch", fake_bin, memsearch_dir):
+        directory.mkdir(parents=True)
+    (home / ".memsearch" / "config.toml").write_text("", encoding="utf-8")
+    (home / ".memsearch" / ".pypi-latest").write_text("0.4.14", encoding="utf-8")
+    _write_executable(
+        fake_bin / "memsearch",
+        """#!/usr/bin/env bash
+if [ "$1" = config ] && [ "$2" = list ]; then
+  printf '{"embedding":{"provider":"onnx","model":"test-model","api_key":""},"milvus":{"uri":"%s"}}\\n' "$TEST_LITE_URI"
+  exit 0
+fi
+if [ "$1" = config ] && [ "$2" = get ]; then
+  case "$3" in
+    embedding.provider) echo onnx ;;
+    embedding.model) echo test-model ;;
+    milvus.uri) echo "$TEST_LITE_URI" ;;
+    *) echo "" ;;
+  esac
+  exit 0
+fi
+if [ "$1" = --version ]; then
+  echo 'memsearch, version 0.4.14'
+  exit 0
+fi
+if [ "$1" = index ]; then
+  ps -o pgid= -p $$ | tr -d ' ' > "$TEST_PGID_FILE"
+fi
+exit 0
+""",
+    )
+    _write_executable(fake_bin / "pgrep", "#!/usr/bin/env bash\nexit 1\n")
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        "CLAUDE_PROJECT_DIR": str(tmp_path),
+        "MEMSEARCH_DIR": str(memsearch_dir),
+        "TEST_LITE_URI": str(tmp_path / "lite.db"),
+        "TEST_PGID_FILE": str(pgid_file),
+    }
+
+    # start_new_session makes the hook its own group leader, as a host's hook runner would.
+    hook = subprocess.Popen(
+        ["bash", str(script)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+        start_new_session=True,
+    )
+    hook.communicate(timeout=30)
+
+    assert _wait_for(lambda: pgid_file.exists() and pgid_file.read_text().strip() != "")
+    # A group shared with the hook is torn down with it; the index must have its own.
+    assert int(pgid_file.read_text().strip()) != hook.pid
+
+
 def test_session_start_shows_skill_candidate_hint(tmp_path: Path) -> None:
     hint = "SKILLS: 2 candidate skill version(s) pending install - run the memory-to-skill skill to review and install."
     for name, script in (

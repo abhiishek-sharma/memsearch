@@ -275,6 +275,9 @@ else
   # Claude Code uses a one-shot index for Lite, where a watch would hold the database lock.
   if [[ "$MILVUS_URI" != http* ]] && [[ "$MILVUS_URI" != tcp* ]] && [[ "$MILVUS_URI" != unix:* ]]; then
     kill_orphaned_index
+    # Job control gives the one-shot index its own process group, so it is not
+    # torn down with the hook's group (start_watch() detaches the watch the same way).
+    set -m
     (
       _index_args=("$MEMORY_DIR")
       [ -n "$COLLECTION_NAME" ] && _index_args+=(--default-collection "$COLLECTION_NAME")
@@ -286,8 +289,9 @@ else
         _memsearch reset "${_reset_args[@]}" 2>/dev/null || true
         _memsearch index "${_index_args[@]}" 2>/dev/null || true
       fi
-    ) >/dev/null 2>&1 &
+    ) </dev/null >/dev/null 2>&1 &
     echo $! > "$INDEX_PIDFILE"
+    set +m
   fi
 fi
 
